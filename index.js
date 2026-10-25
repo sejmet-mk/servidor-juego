@@ -59,7 +59,16 @@ function leave(socket) {
   const room = rooms.get(code);
   roomOf.delete(socket.id);
   if (!room) return;
-  if (room.host === socket.id) { closeRoom(room, "host"); return; }
+  if (room.host === socket.id) {
+    // traspaso de anfitrion: el invitado mas antiguo pasa a ser el anfitrion y los demas se quedan en la sala
+    const live = [...room.members].filter(id => io.sockets.sockets.get(id));
+    if (!room.ready || !live.length) { closeRoom(room, "host"); return; }
+    const next = live[0], rest = live.slice(1);
+    room.host = next; room.members = new Set(rest);
+    io.sockets.sockets.get(next).emit("promoted", { peers: rest });
+    for (const id of rest) { const s = io.sockets.sockets.get(id); if (s) s.emit("newhost", {}); }
+    return;
+  }
   room.members.delete(socket.id);
   room.waiting = room.waiting.filter(w => w.id !== socket.id);
   const h = io.sockets.sockets.get(room.host);
@@ -131,7 +140,6 @@ io.on("connection", (socket) => {
   // reenvío: invitado -> anfitrión ; anfitrión -> invitado concreto
   socket.on("m", (p) => {
     if (!p) return;
-    if (process.env.DBG) { const k=(socket.id===(rooms.get(roomOf.get(socket.id))||{}).host?"H":"G")+(p.c)+":"+(p.d&&p.d.t); DBGC[k]=(DBGC[k]||0)+1; }
     const room = rooms.get(roomOf.get(socket.id));
     if (!room || !room.ready) return;
     if (socket.id === room.host) {
@@ -156,6 +164,5 @@ setInterval(() => {
   }
 }, 30000);
 
-const DBGC={};if(process.env.DBG)setInterval(()=>console.log(JSON.stringify(DBGC)),4000);
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => console.log("¡Servidor listo y escuchando en el puerto " + PORT + "!"));
