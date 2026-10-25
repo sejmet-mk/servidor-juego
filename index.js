@@ -26,6 +26,12 @@ const io = new Server(httpServer, {
   perMessageDeflate: false           // sin compresión: menos CPU y menos retraso
 });
 
+// canal "sin garantia": si el destino va atrasado (cola de envio llena) se descarta en vez de acumular retraso
+function congested(s, chan) {
+  if (chan !== "u") return false;
+  try { const w = s.conn.transport.ws; return !!(w && w.bufferedAmount > 20000); } catch (e) { return false; }
+}
+
 const CODE_CH = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 function newCode() {
   for (let k = 0; k < 50; k++) {
@@ -125,16 +131,16 @@ io.on("connection", (socket) => {
   // reenvío: invitado -> anfitrión ; anfitrión -> invitado concreto
   socket.on("m", (p) => {
     if (!p) return;
+    if (process.env.DBG) { const k=(socket.id===(rooms.get(roomOf.get(socket.id))||{}).host?"H":"G")+(p.c)+":"+(p.d&&p.d.t); DBGC[k]=(DBGC[k]||0)+1; }
     const room = rooms.get(roomOf.get(socket.id));
     if (!room || !room.ready) return;
-    const tx = p.c === "u" ? socket.volatile : socket;
     if (socket.id === room.host) {
       if (!room.members.has(p.to)) return;
       const s = io.sockets.sockets.get(p.to);
-      if (s) (p.c === "u" ? s.volatile : s).emit("m", { c: p.c, d: p.d });
+      if (s && !congested(s, p.c)) s.emit("m", { c: p.c, d: p.d });
     } else {
       const h = io.sockets.sockets.get(room.host);
-      if (h) (p.c === "u" ? h.volatile : h).emit("m", { from: socket.id, c: p.c, d: p.d });
+      if (h && !congested(h, p.c)) h.emit("m", { from: socket.id, c: p.c, d: p.d });
     }
   });
 
@@ -150,5 +156,6 @@ setInterval(() => {
   }
 }, 30000);
 
+const DBGC={};if(process.env.DBG)setInterval(()=>console.log(JSON.stringify(DBGC)),4000);
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => console.log("¡Servidor listo y escuchando en el puerto " + PORT + "!"));
