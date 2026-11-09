@@ -89,8 +89,12 @@ io.on("connection", (socket) => {
     if (typeof cb !== "function") return;
     leave(socket);
     let best = null;
+    const score = r => (r.ready ? 1000 : 0) + r.members.size;   // primero salas ya listas y con mas pilotos
     for (const r of rooms.values()) {
-      if (r.pub && 1 + r.members.size < MAX_PLAYERS && (!best || r.members.size > best.members.size)) best = r;
+      if (!r.pub || 1 + r.members.size >= MAX_PLAYERS) continue;
+      if (!io.sockets.sockets.get(r.host)) continue;            // anfitrion desconectado: sala muerta
+      if (!r.ready && Date.now() - r.t > 20000) continue;       // anfitrion que no termina de cargar
+      if (!best || score(r) > score(best)) best = r;
     }
     if (best) return cb({ ok: true, host: false, code: best.code });
     const code = newCode();
@@ -140,6 +144,7 @@ io.on("connection", (socket) => {
   // reenvío: invitado -> anfitrión ; anfitrión -> invitado concreto
   socket.on("m", (p) => {
     if (!p) return;
+    if (process.env.DBG) { const k=(socket.id===(rooms.get(roomOf.get(socket.id))||{}).host?"H":"G")+(p.c)+":"+(p.d&&p.d.t); DBGC[k]=(DBGC[k]||0)+1; if(p.d&&p.d.t==="es"){DBGC.esBytes=Math.max(DBGC.esBytes||0,JSON.stringify(p.d).length);} }
     const room = rooms.get(roomOf.get(socket.id));
     if (!room || !room.ready) return;
     if (socket.id === room.host) {
@@ -150,6 +155,20 @@ io.on("connection", (socket) => {
       const h = io.sockets.sockets.get(room.host);
       if (h && !congested(h, p.c)) h.emit("m", { from: socket.id, c: p.c, d: p.d });
     }
+  });
+
+  // fusion de salas: un anfitrion solo pregunta si hay otra sala publica con pilotos a la que unirse
+  socket.on("peek", (_d, cb) => {
+    if (typeof cb !== "function") return;
+    const mine = roomOf.get(socket.id);
+    let best = null;
+    for (const r of rooms.values()) {
+      if (r.code === mine || !r.pub || !r.ready || !io.sockets.sockets.get(r.host)) continue;
+      if (1 + r.members.size >= MAX_PLAYERS) continue;
+      if (r.members.size === 0 && !(mine && mine > r.code)) continue;   // dos salas vacias: la de codigo mayor se une a la menor
+      if (!best || r.members.size > best.members.size || (r.members.size === best.members.size && r.code < best.code)) best = r;
+    }
+    cb({ ok: !!best, code: best ? best.code : null });
   });
 
   socket.on("leave", () => leave(socket));
@@ -164,5 +183,6 @@ setInterval(() => {
   }
 }, 30000);
 
+const DBGC={};if(process.env.DBG)setInterval(()=>console.log(JSON.stringify(DBGC)),4000);
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => console.log("¡Servidor listo y escuchando en el puerto " + PORT + "!"));
